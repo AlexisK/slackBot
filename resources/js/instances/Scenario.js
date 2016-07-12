@@ -1,0 +1,4 @@
+
+MODEL.Scenario.declare.push(() => {
+    
+});

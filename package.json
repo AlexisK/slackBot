@@ -1,0 +1,21 @@
+{
+    "name": "project",
+    "private": true,
+    "version": "1.0.0",
+    "description": "",
+    "scripts": {
+    },
+    "keywords": [],
+    "author": "AlexisK",
+    "license": "",
+    "devDependencies": {
+        "gulp":"*",
+        "run-sequence":"*",
+        "gulp-concat":"*",
+        "gulp-csso":"*",
+        "gulp-less":"*",
+        "gulp-uglify":"*"
+    },
+    "dependencies": {
+    }
+}
