@@ -7,6 +7,27 @@ var csso    = require('gulp-csso');
 var less    = require('gulp-less');
 var uglify  = require('gulp-uglify');
 var nodemon = require('gulp-nodemon');
+var jiraApi = require('jira').JiraApi;
+
+
+
+var config = {
+    jira: {
+        host: 'alexisktestingspace.atlassian.net',
+        port: '443',
+        user: 'oleksii.kaliuzhnyi@skywindgroup.com',
+        password: 'kernel13Adv'
+    },
+    status: (function(obj) {
+        obj.available = [obj.pending, obj.current].join(', ')
+        return obj;
+    })({
+        current: '"In Progress"',
+        pending: '"To Do"',
+        done: '"Done"'
+    })
+}
+
 
 
 gulp.task('build_css', function(done) {
@@ -89,9 +110,36 @@ gulp.task('build', function() {
 
 
 
+var REF = {};
+
+ function connect_jira() {
+    var jira = new jiraApi('https', config.jira.host, config.jira.port, config.jira.user, config.jira.password, '2');
+    REF.jira = jira;
+    console.log('Connected Jira');
+}
+
+function getData(req) {
+    var parsed = require("url").parse(req.url).query;
+    parsed && (parsed = parsed.split('&')) || (parsed = null);
+    var data = {};
+    parsed && parsed.forEach(v=>{ v = v.split('='); data[v[0]]=v[1]; });
+    return data;
+}
+
+function sendData(res) {
+    return function(error, issue) {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.end(JSON.stringify(issue));
+    };
+}
+
+
+
+
 gulp.task('observe', ['build'], function() {
     
     var bs1 = browserSync.create("frontend");
+    var bs2 = browserSync.create("backend");
     
     bs1.init({
         notify: false,
@@ -102,6 +150,57 @@ gulp.task('observe', ['build'], function() {
         }
     });
     
+    bs2.init({
+        notify: false,
+        open: false,
+        port: 3002,
+        ui: {
+            port: 3004
+        },
+        proxy: {
+            target: 'localhost:3002',
+            middleware: [
+                
+                {
+                    route: '/jira/project',
+                    handle: function (req, res, next) {
+                        REF.jira.getProject(getData(req).name, sendData(res));
+                    }
+                },
+                {
+                    route: '/jira/issue',
+                    handle: function (req, res, next) {
+                        REF.jira.findIssue(getData(req).name, sendData(res));
+                    }
+                },
+                {
+                    route: '/jira/search',
+                    handle: function (req, res, next) {
+                        var data = getData(req);
+                        REF.jira.searchJira(data.name, data.options, sendData(res));
+                    }
+                },
+                {
+                    route: '/jira/userIssues',
+                    handle: function (req, res, next) {
+                        var data = getData(req);
+                        REF.jira.searchJira(`status in (${config.status[data.status]}) AND assignee in (${data.name}) order by updated DESC`, data.options, sendData(res));
+                    }
+                },
+                {
+                    route: '/jira/user',
+                    handle: function (req, res, next) {
+                        var data = getData(req);
+                        REF.jira.searchUsers(data.name, 0, 1, true, true, sendData(res));
+                    }
+                }
+                
+            ]
+        }
+    });
+    
+    connect_jira();
+
     gulp.watch(['./resources/**/*.less'], ['build_css', bs1.reload]);
     gulp.watch(['./resources/**/*.js']  , ['build_js', bs1.reload]);
     gulp.watch(['./resources/**/*.html'], ['build_html', bs1.reload]);
