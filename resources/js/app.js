@@ -2,14 +2,52 @@
 
 
 var mainScenario = PF((done, fail) => {
-    // GLOBALEVENT.click.add((ev) => console.log('Click!'));
+    GLOBALEVENT.click.add((ev) => console.log('Click!'));
+    
+    window.VARS = {}
     
     
-    slack.req('auth.test').then(data=> console.log(data));
-    slack.req('channels.list').then(data=>{
-        console.log(data);
+    slack.req('auth.test').then(resp=> {
+    if ( resp.ok ) {
+        
+        // slack.req('channels.list', null, {
+            // autofetch: true
+        // });
+        // slack.when_ready(()=>{ console.log('All done!', slack.db.channel, slack.db.user); })
+        
+        ON('slack/read/message', (data, ev) => {
+            console.log('slack/message', data);
+        });
+        
+        //- mirror
+        ON('slack/read/message', data => {
+            data.ts = parseInt(data.ts) * 1000;
+            if ( data.subtype != 'bot_message' && VARS.latestTs && data.ts > VARS.latestTs ) {
+                
+                VARS.latestTs = data.ts;
+                var author = slack.db.user[data.user];
+                
+                for ( var k in MESSAGEHANDLER ) {
+                    MESSAGEHANDLER[k].handle(data);
+                }
+                
+            }
+        });
+        
+        slack.req('rtm.start', null, {
+            autofetch: true
+        }).then(resp => {
+            if ( resp.ok ) {
+                console.log('Got RTM!', resp);
+                VARS.latestTs = Date.now();
+                
+                window.sock = WEBSOCKETCLIENT.slackChat;
+                sock.reconnect(resp.url);
+            }
+        });
+        
+        }
     });
-    slack.when_ready(()=>{ console.log('All done!', slack.db.channel, slack.db.user); })
     
     
     done();

@@ -14,7 +14,10 @@
         "gulp-concat":"*",
         "gulp-csso":"*",
         "gulp-less":"*",
-        "gulp-uglify":"*"
+        "gulp-uglify":"*",
+        "browser-sync": "latest",
+        "jira": "latest",
+        "url":"latest"
     },
     "dependencies": {
     }

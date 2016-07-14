@@ -159,6 +159,38 @@ newModel('GlobalEvent', function(trigger, options) {
 });
 
 
+newModel('MessageHandler', function(pattern, parser, options) {
+    var self = getSelf(this, 'GlobalEvent');
+    self.inherit(BaseModel);
+    
+    self.init = () => {
+        
+        self.pattern = pattern;
+        self.parser = parser;
+        self.options = mergeObjects({
+            
+        }, options);
+        
+        if ( self.pattern.constructor == 'String' ) {
+            self.is_match = function(val) { return val == self.pattern; }
+        } else {
+            self.is_match = function(val) { return (new RegExp(self.pattern)).test(val); }
+        }
+        
+        MESSAGEHANDLER[pattern] = self;
+    }
+    
+    self.handle = function(resp) {
+        if ( self.is_match(resp.text) ) {
+            self.parser(self, resp.text, slack.db.user[resp.user], resp);
+        }
+    }
+    
+    self.init();
+    
+});
+
+
 newModel('Protocol',function(name, options) {
     var self = getSelf(this, 'Protocol');
     self.inherit(BaseModel);
@@ -303,6 +335,91 @@ newModel('Storage', function(name, options, db) {
     
 });
 
+
+newModel('WebSocketClient', function(name, options) {
+    
+    var self = getSelf(this);
+    self.inherit(BaseModel);
+    
+    self.init = function() {
+        self.name = name;
+        
+        self.options = mergeObjects({
+            path: null,
+            write: (self, data) => { self.socket.send(data); return new Promise(done => done()); },
+            read : (self, data, ev) => { return new Promise(done => done(data)); },
+            open : (self) => { return new Promise(done => done()); },
+            close: (self) => { return new Promise(done => {
+                tm(self.reconnect, config.reconnect_timeout);
+            }) },
+            error: (self) => { return new Promise(done => done()); }
+        }, options);
+        
+        WEBSOCKETCLIENT[name] = self;
+        
+        //-self.reconnect();
+    }
+    
+    self.read  = function() { Array.prototype.splice.call(arguments, 0, 0, self); return self.options.read.apply(self, arguments); }
+    self.write = function() { Array.prototype.splice.call(arguments, 0, 0, self); return self.options.write.apply(self, arguments); }
+    
+    self.reconnect = function(path) {
+        if ( def(path) ) { self.options.path = path; }
+        var socket = new WebSocket(self.options.path);
+        socket.onopen = ev => {
+            self.options.open(self, ev).then(() => {
+                socket.onclose = ev => { return self.options.close(self, ev); }
+                socket.onerror = ev => { return self.options.error(self, ev); }
+                socket.onmessage = ev => {return self.options.read(self, ev.data, ev); }
+            });
+        }
+        
+        self.socket = socket;
+    }
+    
+    self.init();
+    
+});
+
+
+
+
+window.ORM = new (function() {
+    var self = getSelf(this);
+    
+    self.init = function() {
+        self.db = {};
+        
+    }
+    
+    self.registerModel = function(name, params) {
+        
+    }
+    
+    self.init();
+    
+})();
+
+ORM.registerModel('user', {
+    api: {
+        slack: {
+            parse: obj => {
+                return {
+                    slack_id: obj.id,
+                    color: obj.color,
+                    is_bot: obj.is_bot,
+                    slack_name: obj.name,
+                    email: obj.profile.email
+                }
+            }
+        },
+        jira: {
+            parse: obj => {
+                return 1;
+            }
+        }
+    }
+});
 function $AD(obj, path, params) {
     params = params || {};
     
@@ -410,12 +527,14 @@ window.slack = {
     queue: [],
     ignore_ids: [],
     
-    req(path, data) {
-        if ( typeof(data) == 'function' ) { todo = data; data = null; }
+    req(path, data, params) {
+        params = mergeObjects({
+            autofetch: false
+        }, params);
         
         var pms = new Promise(done => {
             PROTOCOL.slack.write(path, data ,resp => {
-                if ( resp.ok ) {
+                if ( params.autofetch && resp.ok ) {
                     this.search_refs(resp);
                 }
                 done(resp);
@@ -441,7 +560,7 @@ window.slack = {
             if ( resp[key] && resp[key].constructor === Array ) {
                 resp[key].forEach(obj => {
                     var id = obj.id || obj[model+'_id'] || obj;
-                    this.getItem(model, id);
+                    this.getItem(model, id, { autofetch: true });
                 });
             }
         }
@@ -452,13 +571,13 @@ window.slack = {
         this.search_refs(item);
     },
     
-    getItem(model, id) {
+    getItem(model, id, params) {
         var req = {};
         req[model] = id;
         if ( this.ignore_ids.indexOf(id) >= 0 ) { return Promise.resolve(); }
         this.ignore_ids.push(id);
         
-        var pms = new Promise(done => { slack.req(this.models[model].multiple+'.info', req).then(done); });
+        var pms = new Promise(done => { slack.req(this.models[model].multiple+'.info', req, params).then(done); });
         this.queue.push(pms);
         return pms;
     },
@@ -562,6 +681,59 @@ MODEL.GlobalEvent.declare.push(() => {
 });
 
 
+function sendAsBot(resp, msg, botname) {
+    slack.req('chat.postMessage', {
+        channel: resp.channel,
+        text: msg.replace('&', '&amp;')
+                 .replace('<', '&lt;')
+                 .replace('>', '&gt;'),
+        as_user: false,
+        username: botname||'R2Dbot'
+    });
+}
+
+
+function parseMessage() {
+    var base = Array.prototype.splice.call(arguments, 0, 1)[0].trim().split(/[\s\,]+/g);
+    var result = {};
+    for ( var i = 0, len = Math.min(arguments.length, base.length); i < len; i++ ) {
+        def(arguments[i]) && (result[arguments[i]] = base[i]);
+    }
+    if ( base.length > arguments.length ) {
+        result.args = base.slice(arguments.length);
+    }
+    return result;
+}
+
+
+MODEL.MessageHandler.declare.push(()=>{
+    
+    new MessageHandler('status', (self, t, user, resp)=> {
+        sendAsBot(resp, `${user.name}`,'STATUS');
+    });
+    
+    new MessageHandler(/(^|\W)(hello|hi|yo)($||W)/gi, (self, text, user, resp) => {
+        sendAsBot(resp, `Hi, ${user.name}`);
+    } );
+    
+    new MessageHandler(/(^|\W)tasks\s+([\d\w ]+)\s*$/gi, (self, text, user, slackResp) => {
+        var req = parseMessage(text, null, 'name', 'status');
+        req.status = req.status || 'available';
+        
+        PROTOCOL.jira.write('userIssues', req, resp => {
+            console.log(resp);
+            sendAsBot(slackResp, `${req.name}: tasks with status ${req.status}`);
+            resp.issues.forEach(issue => {
+                sendAsBot(slackResp, `${issue.key} ${issue.fields.status.name} : ${issue.fields.summary}`);
+            });
+        });
+    } );
+    
+    
+    
+});
+
+
 MODEL.Protocol.declare.push(() => {
     
     new Protocol('slack', {
@@ -579,10 +751,31 @@ MODEL.Protocol.declare.push(() => {
             
             var query = [];
             for ( var k in data ) {
-                query.push(k+'='+data[k]);
+                query.push(encodeURIComponent(k)+'='+encodeURIComponent(data[k]));
             }
             
             ajaxRequest('GET','https://slack.com/api/'+[path,query.join('&')].join('?'), (resp)=> {
+                self.read(resp, path, todo);
+            });
+        }
+    });
+    
+    new Protocol('jira', {
+        read: (self, data, path, done) => {
+            done(data);
+            EMIT('jira/'+path.split('.').join('/'), path, data);
+        },
+        write: (self, path, data, todo) => {
+            todo = todo || function(resp) { console.log(resp); };
+            data = data || {};
+            if ( typeof(data) == 'string' ) { data = {name:data}; }
+            
+            var query = [];
+            for ( var k in data ) {
+                query.push(k+'='+data[k]);
+            }
+            
+            ajaxRequest('GET','http://localhost:3002/jira/'+[path,query.join('&')].join('?'), (resp)=> {
                 self.read(resp, path, todo);
             });
         }
@@ -618,17 +811,71 @@ MODEL.Storage.declare.push(() => {
 });
 
 
+MODEL.WebSocketClient.declare.push(()=>{
+    
+    new WebSocketClient('slackChat', {
+        
+        read: (self, data, ev) => {
+            data = JSON.parse(data);
+            if ( data.type ) {
+                EMIT(['slack','read', data.type], data, ev);
+                return new Promise(done => done(data));
+            }
+        }
+    });
+    
+});
+
+
 
 
 var mainScenario = PF((done, fail) => {
-    // GLOBALEVENT.click.add((ev) => console.log('Click!'));
+    GLOBALEVENT.click.add((ev) => console.log('Click!'));
+    
+    window.VARS = {}
     
     
-    slack.req('auth.test').then(data=> console.log(data));
-    slack.req('channels.list').then(data=>{
-        console.log(data);
+    slack.req('auth.test').then(resp=> {
+    if ( resp.ok ) {
+        
+        // slack.req('channels.list', null, {
+            // autofetch: true
+        // });
+        // slack.when_ready(()=>{ console.log('All done!', slack.db.channel, slack.db.user); })
+        
+        ON('slack/read/message', (data, ev) => {
+            console.log('slack/message', data);
+        });
+        
+        //- mirror
+        ON('slack/read/message', data => {
+            data.ts = parseInt(data.ts) * 1000;
+            if ( data.subtype != 'bot_message' && VARS.latestTs && data.ts > VARS.latestTs ) {
+                
+                VARS.latestTs = data.ts;
+                var author = slack.db.user[data.user];
+                
+                for ( var k in MESSAGEHANDLER ) {
+                    MESSAGEHANDLER[k].handle(data);
+                }
+                
+            }
+        });
+        
+        slack.req('rtm.start', null, {
+            autofetch: true
+        }).then(resp => {
+            if ( resp.ok ) {
+                console.log('Got RTM!', resp);
+                VARS.latestTs = Date.now();
+                
+                window.sock = WEBSOCKETCLIENT.slackChat;
+                sock.reconnect(resp.url);
+            }
+        });
+        
+        }
     });
-    slack.when_ready(()=>{ console.log('All done!', slack.db.channel, slack.db.user); })
     
     
     done();

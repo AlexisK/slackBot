@@ -16,10 +16,31 @@ MODEL.Protocol.declare.push(() => {
             
             var query = [];
             for ( var k in data ) {
-                query.push(k+'='+data[k]);
+                query.push(encodeURIComponent(k)+'='+encodeURIComponent(data[k]));
             }
             
             ajaxRequest('GET','https://slack.com/api/'+[path,query.join('&')].join('?'), (resp)=> {
+                self.read(resp, path, todo);
+            });
+        }
+    });
+    
+    new Protocol('jira', {
+        read: (self, data, path, done) => {
+            done(data);
+            EMIT('jira/'+path.split('.').join('/'), path, data);
+        },
+        write: (self, path, data, todo) => {
+            todo = todo || function(resp) { console.log(resp); };
+            data = data || {};
+            if ( typeof(data) == 'string' ) { data = {name:data}; }
+            
+            var query = [];
+            for ( var k in data ) {
+                query.push(k+'='+data[k]);
+            }
+            
+            ajaxRequest('GET','http://localhost:3002/jira/'+[path,query.join('&')].join('?'), (resp)=> {
                 self.read(resp, path, todo);
             });
         }

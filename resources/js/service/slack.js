@@ -16,12 +16,14 @@ window.slack = {
     queue: [],
     ignore_ids: [],
     
-    req(path, data) {
-        if ( typeof(data) == 'function' ) { todo = data; data = null; }
+    req(path, data, params) {
+        params = mergeObjects({
+            autofetch: false
+        }, params);
         
         var pms = new Promise(done => {
             PROTOCOL.slack.write(path, data ,resp => {
-                if ( resp.ok ) {
+                if ( params.autofetch && resp.ok ) {
                     this.search_refs(resp);
                 }
                 done(resp);
@@ -47,7 +49,7 @@ window.slack = {
             if ( resp[key] && resp[key].constructor === Array ) {
                 resp[key].forEach(obj => {
                     var id = obj.id || obj[model+'_id'] || obj;
-                    this.getItem(model, id);
+                    this.getItem(model, id, { autofetch: true });
                 });
             }
         }
@@ -58,13 +60,13 @@ window.slack = {
         this.search_refs(item);
     },
     
-    getItem(model, id) {
+    getItem(model, id, params) {
         var req = {};
         req[model] = id;
         if ( this.ignore_ids.indexOf(id) >= 0 ) { return Promise.resolve(); }
         this.ignore_ids.push(id);
         
-        var pms = new Promise(done => { slack.req(this.models[model].multiple+'.info', req).then(done); });
+        var pms = new Promise(done => { slack.req(this.models[model].multiple+'.info', req, params).then(done); });
         this.queue.push(pms);
         return pms;
     },
